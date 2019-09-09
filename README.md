@@ -1,6 +1,8 @@
 OpenCL Notes
 ============
 
+Notes taken while reading OpenCL in Action, by Matthew Scarpino.
+
 # Host Data Structures
 
 - There are six data structures that need to be configured by the host:
@@ -148,6 +150,8 @@ No retrieval of information, no alternatives to create queues in different ways.
 cl_command_queue clCreateCommandQueue(cl_context context, cl_device_id device, cl_command_queue_properties properties, cl_int *err)
 ```
 
+> Note: this function is deprecated as of OpenCL 2.0, where it was replaced by `clCreateCommandQueueWithProperties`.
+
 It needs a context, a device and a structure of properties. The error code is returned in `err`. The device must be associated with the context. The available properties are:
 - `CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE`
 - `CL_QUEUE_PROFILING_ENABLE`
@@ -161,3 +165,136 @@ cl_int clEnqueueTask(cl_command_queue queue, cl_kernel kernel, cl_uint num_event
 ```
 
 This function enqueues a kernel into a command queue. The `num_events` and `wait_list` parameters specify a list of events that must be finished before executing this kernel. The `event` parameter, if not `null`, will be populated with a unique event that can be used to identify this particular kernel execution.
+
+# Transferring Data from Host to Device
+
+In order to set the arguments of a kernel, one needs to set them one by one by calling the next function:
+
+```
+cl_int clSetKernelArg(cl_kernel kernel, cl_uint index, size_t size, const void *value)
+```
+
+The `index` is the index of the argument in the kernel, while the `value` is a pointer to the object that will be used by the device.
+
+This pointer can point to:
+- primitive data
+- memory objects
+- sampler objects
+- it can be null, meaning that the device will just allocate memory.
+
+## Memory Objects
+
+Memory objects are represented by `cl_mem` structures. They can be buffer or image objects.
+
+### Buffer Objects
+
+In order to create a new buffer, use the following function: 
+
+```C
+cl_mem clCreateBuffer(cl_context context, cl_mem_flags options, size_t size, void *host_ptr, cl_int *error)
+```
+
+The `cl_mem` returned is a wrapper around the host memory pointed by `host_ptr`. The options parameter should be a combination of flags, with one flag describing how the device will access the memory (one of the mutually exclusive `CL_MEM_READ_WRITE`, `CL_MEM_WRITE_ONLY` and `CL_MEM_READ_ONLY`) and a combination of flags describing how the object is allocated in the host (possible flags are `CL_MEM_USE_HOST_PTR` `CL_MEM_COPY_HOST_PTR` and `CL_MEM_ALLOC_HOST_PTR`).
+
+The host does not allocate memory for a write only buffer, so the `host_ptr` may be `null` in those cases.
+
+#### Subbuffers
+
+A subbuffer is just a view of an existing buffer, and can be created with the function:
+
+```C
+clCreateSubBuffer(cl_mem buffer, cl_mem_flags flags, cl_buffer_create_type type, const void *info, cl_int *error)
+```
+
+This creates a subbuffer of the provided `buffer`, whose beginning position and size is specified by the `info` argument, which expects a pointer to a struct of type
+
+```C
+typedef struct _cl_buffer_region {
+	size_t origin;
+	size_t size;
+} cl_buffer_region;
+```
+
+The available flags may be the same as the ones used when creating a buffer and the type should be always equal to `CL_BUFFER_CREATE_TYPE_REGION`.
+
+We can retrieve information about buffer objects by using
+
+```C
+cl_int clGetMemObjectInfo(cl_mem object, cl_mem_info param_name, size_t param_value_size, void *param_value, size_t *param_value_size_ret)
+```
+
+The possible parameters to retrieve are:
+- `CL_MEM_TYPE`
+- `CL_MEM_FLAGS`
+- `CL_MEM_HOST_PTR`
+- `CL_MEM_SIZE`
+- `CL_MEM_CONTEXT`
+- `CL_MEM_ASSOCIATED_MEMOBJECT`
+- `CL_MEM_OFFSET`
+- `CL_MEM_REFERENCE_COUNT`
+- `CL_MEM_D3D10_RESOURCE_KHR`
+
+### Image Objects
+
+Image objects are `cl_mem` structures created very much in the same way that buffers are created, but using the following functions:
+
+```C
+cl_mem clCreateImage2D (cl_context context, cl_mem_flags opts, const cl_image_format *format, size_t width, size_t height, size_t row_pitch, void *data, cl_int *error)
+cl_mem clCreateImage3D (cl_context context, cl_mem_flags opts, const cl_image_format *format, size_t width, size_t height, size_t depth, size_t row_pitch, size_t slice_pitch, void *data, cl_int *error)
+```
+
+We can allocate 2D and 3D images, which are just 2D or 3D structures of data. The arguments `context` and `opts` behave in the same way than in the case of buffers. The `width`, `height` and `depth` arguments set the structure of the data (in pixels), and the `*_pitch` arguments set the pitch of the image; i.e., the number of bytes per row (and per slice in the 3D case). The pitch arguments will usualy be 0, which tells OpenCL that the number of bytes per row can be computed as the number of pixels in a row multiplied by the number of bytes per pixel. This may not be the case, e.g., when the rows are padded to align the memory.
+
+Regarding the third argument, `format`, it is a pointer to a structure like
+
+```C
+typedef struct _cl_image_format {
+	cl_channel_order image_channel_order;
+	cl_channel_type image_channel_data_type;
+} cl_image_format;
+```
+
+It sets the order in which the channels RGBA (if present) are stored (the usual RGBA is `CL_RGBA`) and the type and number of bits per channel (the usual 8-bit image is `CL_UNSIGNED_INT8`).
+
+As before, one can get information about an image object by using the function
+
+```C
+cl_int clGetImageInfo(cl_mem image,	cl_image_info param_name, size_t param_value_size, void *param_value, size_t *param_value_size_ret)
+```
+
+The possible parameters to retrieve are:
+- `CL_IMAGE_FORMAT`
+- `CL_IMAGE_ELEMENT_SIZE`
+- `CL_IMAGE_ROW_PITCH`
+- `CL_IMAGE_SLICE_PITCH`
+- `CL_IMAGE_WIDTH`
+- `CL_IMAGE_HEIGHT`
+- `CL_IMAGE_DEPTH`
+- `CL_IMAGE_D3D10_SUBRESOURCE_KHR`
+
+### Transferring Data
+
+We know how to transfer data from the device to the host using memory/image objects and setting the kernel parameters (when this transfer is done depends on the specific implementation, but the standard ensures that the data is accesible by the device when the kernel is executed, so the copy usually happens as soon as the kernel is set).
+
+We need to enqueue reads and writes using the functions `clEnqueue[X][Y]` where `[X]` may be `Read` or `Write` and `[Y]` is one of `Buffer`, `Image` or `BufferRect`. All of them have a `blocking` parameter that sets the blocking status of the function: if it is set to `CL_TRUE`, the function will block until the operation is done; if it is `CL_FALSE`, it will not. We use `origin[3]` and `region[3]` in the `Image` functions to specicfy the origin pixel and the dimensions of the square (or cube) that we are interested in. If we want to do the same thing with a non-image object, we can use the `BufferRect` functions, which use `buffer_origin[3]`, `host_origin[3]` and `region[3]` in the same way as before.
+
+### Mapping data
+
+As in C, one can map buffer data to the host memory address space. The main idea is to map buffer/image objects to the host and use common memory primitives to read/write into those objects instead of using the `clEnqueue[X][Y]` functions. In order to map and unmap regions of buffers and images, the functions to use are:
+
+```C
+void* clEnqueueMapBuffer(cl_command_queue queue, cl_mem buffer, cl_bool blocking, cl_map_flags map_flags, size_t offset, size_t data_size, cl_uint num_events, const cl_event *wait_list, cl_event *event, cl_int *errcode_ret)
+void* clEnqueueMapImage(cl_command_queue queue, cl_mem image, cl_bool blocking, cl_map_flags map_flags, const size_t origin[3], const size_t region[3], size_t *row_pitch, size_t *slice_pitch, cl_uint num_events, const cl_event *wait_list, cl_event *event, cl_int *errcode_ret)
+int clEnqueueUnmapMemObject(cl_command_queue queue, cl_mem memobj, void *mapped_ptr, cl_uint num_events, const cl_event *wait_list, cl_event *event)
+```
+
+The `void*` pointer returned by the map functions identify the start of the memory that maps to the object and is the parameter that the `unmap` function expects. The flags in the `map` functions can be any combination of the flags `CL_MAP_READ` and `CL_MAP_WRITE`.
+
+The process to use mapped memory is:
+1. map the memory
+2. transfer the data using some primitive like `memcpy`
+3. unmap the memory
+
+### Copying Data between Memory Objects
+
+We now know how to copy memory from host to device and from device to host, using explicit read/write functions or memory mappings. But we can also copy data between memory objects. This is accomplished with the functions `clEnqueueCopy[X]` where `[X]` may be `Buffer` or `Image` to copy data between objects of the same type, `BufferToImage` or `ImageToBuffer` to copy data between objects of different type, or `BufferRect` to copy rectangular regions of data between buffers.
